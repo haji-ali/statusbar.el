@@ -56,10 +56,15 @@
   (when (org-clock-is-active)
     org-mode-line-string))
 
-(defcustom statusbar-modeline-format
-  '((global-mode-string
 
-     ("" global-mode-string " "))
+(defcustom statusbar-modeline-format
+  '(
+    (eyebrowse-mode
+     (:eval
+      (eyebrowse-mode-line-indicator)))
+    (:eval (statusbar-org-mode-clock))
+    (:eval mu4e-alert-mode-line)
+    " "
     display-time-string)
   "Variables to remove from the mode-line and display in the statusbar instead.
 All variables listed here will be removed from `global-mode-string' and
@@ -147,7 +152,10 @@ If you use exwm systray, Offset counts from the last systray icon."
       (setq-local header-line-format nil)
       (setq-local tab-line-format nil)
 
-      (add-hook 'kill-buffer-hook (lambda () (delete-frame statusbar--frame)) nil t)
+      (add-hook 'kill-buffer-hook (lambda ()
+                                    (when (statusbar--alive)
+                                      (delete-frame statusbar--frame)
+                                      (setq statusbar--frame nil))) nil t)
 
       ;; Create child-frame
       (unless (frame-live-p statusbar--frame)
@@ -161,9 +169,11 @@ If you use exwm systray, Offset counts from the last systray icon."
                  ;; ,(when font
                  ;;    (cons 'font font))
                  (parent-frame . ,(window-frame))
+                 (x-pointer-shape . x-pointer-top-left-arrow)
                  (keep-ratio . nil)
                  (fullscreen . nil)
                  (no-accept-focus . t)
+                 (no-focus-on-map . t)
                  (min-width  . 0)
                  (min-height . 0)
                  (border-width . 0)
@@ -196,6 +206,9 @@ If you use exwm systray, Offset counts from the last systray icon."
           (set-window-buffer window buffer)
           (set-window-dedicated-p window t))
 
+        (with-selected-frame statusbar--frame
+          (setq x-pointer-shape x-pointer-top-left-arrow)
+          (set-mouse-color "black"))
         ;; Make sure not hide buffer's content for scroll down.
         (set-window-point (frame-root-window statusbar--frame) 0)
         (raise-frame statusbar--frame)))))
@@ -448,28 +461,35 @@ parameters of FRAME."
     ;;                     (height . (text-pixels . ,buf-width))))
     ))
 
+(defun statusbar--alive (&optional and-visible)
+  (and statusbar--frame
+       (frame-live-p statusbar--frame)
+       (or (not and-visible) (frame-visible-p statusbar--frame))))
+
 (defun statusbar--delete ()
   "Delete statusbar frame and buffer.
 This will only delete the frame and *NOT* remove the variable watchers."
-  (delete-frame statusbar--frame)
-  (kill-buffer (statusbar--get-buffer)))
+  (kill-buffer (statusbar--get-buffer))
+  (when (statusbar--alive)
+    (delete-frame statusbar--frame)
+    (setq statusbar--frame nil)))
 
 (defun statusbar--hide ()
   "Hide statusbar frame."
-  (when (frame-live-p statusbar--frame)
+  (when (statusbar--alive t)
     (make-frame-invisible statusbar--frame)))
 
 (defun statusbar--unhide ()
-  (when (not (frame-live-p statusbar--frame))
-    (statusbar--create))
-  (make-frame-visible statusbar--frame)
-  (statusbar-refresh))
+  (statusbar-refresh)
+  (make-frame-visible statusbar--frame))
 
 
 ;;; Public functions
 
 (defun statusbar-refresh (&rest _)
   "Refresh statusbar with new variable values."
+  (when (not (statusbar--alive))
+    (statusbar--create))
   (when (frame-visible-p statusbar--frame)
     (let (;; TODO: Window and buffer should be specified correctly
           (txt (format-mode-line statusbar-modeline-format))
@@ -479,6 +499,7 @@ This will only delete the frame and *NOT* remove the variable watchers."
       (with-current-buffer buf
         (erase-buffer)
         (insert txt)
+        ;;(statusbar--sanitize-mode-line)
         (goto-char (point-min)))
       (statusbar--update-pos)
       )))
@@ -530,10 +551,10 @@ This will only delete the frame and *NOT* remove the variable watchers."
     ;;         (remove-hook 'focus-in-hook #'statusbar-refresh)
     ;;       (remove-function after-focus-change-function #'statusbar--refresh-with-focus-check))))
     ;; ;;(statusbar--remove-modeline-vars)
-    ;; (statusbar-hide-on-active-mini nil)
+    (statusbar-hide-on-active-minibuffer nil)
     (statusbar--delete)))
 
-(defun statusbar-hide-on-active-mini (hide)
+(defun statusbar-hide-on-active-minibuffer (hide)
   (if hide
       (progn
         (add-hook #'minibuffer-setup-hook #'statusbar--hide)
@@ -542,11 +563,30 @@ This will only delete the frame and *NOT* remove the variable watchers."
     (remove-hook #'minibuffer-setup-hook #'statusbar--hide)
     (remove-hook #'minibuffer-exit-hook #'statusbar--unhide)))
 
+(defun statusbar--sanitize-mode-line ()
+  (let (match map)
+    (goto-char (point-min))
+    (while (setq match (text-property-search-forward 'local-map))
+      (setq map (prop-match-value match))
+      (when (eq (caadr map) 'mode-line)
+        (add-text-properties
+         (prop-match-beginning match)
+         (prop-match-end match)
+         `(local-map ,(cdadr map)))))))
+
+(defvar statusbar--mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mouse-3] ;; [mouse-2]
+      (lambda () (interactive) (message "CustomAction3"))
+      )
+    map))
+
 (define-derived-mode statusbar--mode special-mode "statusbar"
   "Major mode for statubar buffers"
   (setq truncate-lines nil
         word-wrap nil)
   (fringe-mode 0)
+  ;; (transient-mark-mode -1)
   ;;(toggle-word-wrap -1)
   ;;(toggle-truncate-lines -1)
   ;;(setq buffer-read-only t)
